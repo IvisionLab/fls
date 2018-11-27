@@ -30,6 +30,13 @@ if __name__ == '__main__':
       metavar="/path/to/weights.h5",
       help="Path to weights .h5 file")
 
+  parser.add_argument(
+      '--dataset-base-folder',
+      '-d',
+      required=False,
+      metavar="/path/to/dataset/base/folder",
+      help="Path to dataset base folder")
+
   if len(sys.argv) > 1:
     args = parser.parse_args()
 
@@ -42,7 +49,7 @@ if __name__ == '__main__':
       anns_train = cfg['annotations']['train']
       anns_valid = cfg['annotations']['valid']
       dataset_train, dataset_valid = dataset.gemini_training_dataset(
-          anns_train, anns_valid)
+          anns_train, anns_valid, args.dataset_base_folder)
 
     config = TrainingConfig()
     config.regressor = cfg['regressor']

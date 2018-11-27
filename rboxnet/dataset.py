@@ -134,14 +134,18 @@ class CocoDataset(utils.Dataset):
 
 class GeminiDataset(utils.Dataset):
     LABELS = ["ssiv_bahia", "jequitaia", "balsa"]
-    def load_gemini(self, dataset):
+    def load_gemini(self, dataset, base_folder):
         for i in range(len(GeminiDataset.LABELS)):
             self.add_class('gemini', i, GeminiDataset.LABELS[i])
 
         labels_count = np.zeros(len(self.LABELS), dtype=np.int32)
 
         for item in dataset:
-            image_path = os.path.join(item['basefolder'], item['filepath'])
+            if not base_folder:
+              image_path = os.path.join(item['basefolder'], item['filepath'])
+            else:
+              image_path = os.path.join(base_folder, item['filepath'])
+
             self.add_image(
                 "gemini",
                 image_id=item['filepath'],
@@ -217,16 +221,16 @@ def load_json(filepath, shuffle=False):
       random.shuffle(annotations)
     return annotations
 
-def gemini_dataset(anns, shuffle=True):
+def gemini_dataset(anns, shuffle=True, base_folder=None):
   dataset = GeminiDataset()
-  dataset.load_gemini(load_json(anns, shuffle=shuffle))
+  dataset.load_gemini(load_json(anns, shuffle=shuffle), base_folder=base_folder)
   dataset.prepare()
   return dataset
 
-def gemini_training_dataset(train_annotations, valid_annotations=None):
+def gemini_training_dataset(train_annotations, valid_annotations=None, base_folder=None):
   if valid_annotations == None:
     return load_splitted(train_annotations)
 
-  dataset_train = gemini_dataset(train_annotations)
-  dataset_val = gemini_dataset(valid_annotations)
+  dataset_train = gemini_dataset(train_annotations, base_folder=base_folder)
+  dataset_val = gemini_dataset(valid_annotations, base_folder=base_folder)
   return dataset_train, dataset_val
