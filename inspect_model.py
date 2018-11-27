@@ -85,7 +85,7 @@ rpn_rois, rpn_class, rpn_bbox = net.detect([image], verbose=1)
 #%% [markdown]
 # ## Plot anchors
 #
-limit = 20
+limit = 10
 rpn_class_sorted = np.argsort(rpn_class[:, :, 1].flatten())[::-1]
 boxes = net.anchors[rpn_class_sorted[:limit]]
 N = boxes.shape[0]
