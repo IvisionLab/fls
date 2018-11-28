@@ -1040,7 +1040,7 @@ def fpn_classifier_graph(rois, feature_maps,
     mrcnn_rbbox_sz = KL.Reshape((s[1], num_classes, 2), name="mrcnn_rbbox_sz")(x)
 
 
-    # rotated bouding box sizes
+    # rotated bouding box angles
     x = KL.TimeDistributed(KL.Dense(num_classes * 1, activation='linear'),
                            name='mrcnn_angle_fc')(shared)
     s = K.int_shape(x)

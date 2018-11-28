@@ -185,6 +185,15 @@ def rbox_deltas_loss_layer(target_rbox_deltas, target_class_ids, rbox_deltas):
       lambda x: model.custom_loss_graph(*x), name="rbox_deltas_loss")(
           [target_rbox_deltas, target_class_ids, rbox_deltas])
 
+def rbox_angles_loss_layer(target_rbox_angles, target_class_ids, rbox_angles):
+  return KL.Lambda(
+      lambda x: model.custom_loss_graph(*x), name="rbox_angles_loss")(
+          [target_rbox_angles, target_class_ids, rbox_angles])
+
+def rbox_dim_loss_layer(target_rbox_dim, target_class_ids, rbox_dim):
+  return KL.Lambda(
+      lambda x: model.custom_loss_graph(*x), name="rbox_dim_loss")(
+          [target_rbox_dim, target_class_ids, rbox_dim])
 
 def roi_align_layers(rois, feature_maps, config):
   return model.PyramidROIAlign([config.POOL_SIZE, config.POOL_SIZE],
@@ -240,6 +249,24 @@ def rbox_deltas_regressor_layers(shared, num_classes):
   rbox_deltas = KL.Reshape((s[1], num_classes, 4), name="rbox_deltas")(x)
   return rbox_deltas
 
+def rbox_rotdim_regressor_layers(shared, num_classes):
+  # angles regressor
+  x = KL.TimeDistributed(
+      KL.Dense(num_classes * 1, activation='linear'),
+      name='rbox_angles_fc')(shared)
+
+  s = K.int_shape(x)
+  rbox_angles = KL.Reshape((s[1], num_classes, 1), name="rbox_angles")(x)
+
+  # dimension (width and height) regressor
+  x = KL.TimeDistributed(
+      KL.Dense(num_classes * 2, activation='linear'),
+      name='rbox_dim_fc')(shared)
+
+  s = K.int_shape(x)
+  rbox_dim = KL.Reshape((s[1], num_classes, 2), name="rbox_dim")(x)
+
+  return rbox_angles, rbox_dim
 
 def detection_target_layer(config, inputs):
   return DetectionTargetLayer(config, name="proposal_targets")(inputs)
@@ -329,10 +356,37 @@ def detection_targets_graph(config, proposals, gt_class_ids, gt_boxes,
     gt_rboxes, _ = model.trim_zeros_graph(gt_rboxes, name="trim_gt_rboxes")
     gt_rboxes = tf.gather(gt_rboxes, non_crowd_ix)
     roi_gt_rboxes = tf.gather(gt_rboxes, roi_gt_box_assignment)
-    rbox_deltas = compute_rbox_deltas(roi_gt_boxes, roi_gt_rboxes)
-    rbox_deltas /= 0.2
-    rbox_deltas = tf.pad(rbox_deltas, [(0, N + P), (0, 0)])
-    return rois, roi_gt_class_ids, deltas, rbox_deltas
+
+    if config.regressor == "deltas":
+      rbox_deltas = compute_rbox_deltas(roi_gt_boxes, roi_gt_rboxes)
+      rbox_deltas /= 0.2
+      rbox_deltas = tf.pad(rbox_deltas, [(0, N + P), (0, 0)])
+      return rois, roi_gt_class_ids, deltas, rbox_deltas
+    elif config.regressor == "rotdim":
+      gt_angles = kwargs.get('gt_angles')
+      gt_angles = tf.boolean_mask(gt_angles, non_zeros, name="trim_gt_angles")
+      gt_angles = tf.gather(gt_angles, non_crowd_ix)
+      roi_gt_angles = tf.gather(gt_angles, roi_gt_box_assignment)
+      rbox_angles = roi_gt_angles / 0.2
+
+      # point 1
+      y1 = roi_gt_rboxes[:, 0]
+      x1 = roi_gt_rboxes[:, 1]
+      # point 2
+      y2 = roi_gt_rboxes[:, 2]
+      x2 = roi_gt_rboxes[:, 3]
+      # point 3
+      y3 = roi_gt_rboxes[:, 4]
+      x3 = roi_gt_rboxes[:, 5]
+
+      rw = tf.sqrt(tf.pow(x2 - x1, 2) + tf.pow(y2 - y1, 2))
+      rh = tf.sqrt(tf.pow(x3 - x2, 2) + tf.pow(y3 - y2, 2))
+      rbox_dim = tf.stack([rh, rw], axis=1)
+      rbox_dim /= 0.1
+
+      rbox_dim = tf.pad(rbox_dim, [(0, N + P), (0, 0)])
+      rbox_angles = tf.pad(rbox_angles, [(0, N + P), (0, 0)])
+      return rois, roi_gt_class_ids, deltas, rbox_angles, rbox_dim
 
   return rois, roi_gt_class_ids, deltas
 
@@ -348,11 +402,17 @@ class DetectionTargetLayer(KE.Layer):
   def call(self, inputs):
     names = ["rois", "target_class_ids", "target_bbox"]
     if self.config.regressor == "deltas":
-      gt_rboxes = inputs[3]
       names += ["target_rbox_deltas"]
       outputs = utils.batch_slice(
           inputs,
           lambda a, b, c, d: detection_targets_graph(self.config, a, b, c, gt_rboxes=d),
+          self.config.IMAGES_PER_GPU,
+          names=names)
+    elif self.config.regressor == "rotdim":
+      names += ["target_rbox_angles", "target_rbox_dim"]
+      outputs = utils.batch_slice(
+          inputs,
+          lambda a, b, c, d, e: detection_targets_graph(self.config, a, b, c, gt_rboxes=d, gt_angles=e),
           self.config.IMAGES_PER_GPU,
           names=names)
     else:
@@ -373,7 +433,12 @@ class DetectionTargetLayer(KE.Layer):
     ]
 
     if self.config.regressor == "deltas":
-      output_shape += [(None, self.config.TRAIN_ROIS_PER_IMAGE, 4)]
+      output_shape += [(None, self.config.TRAIN_ROIS_PER_IMAGE, 4)]  # RBOX deltas
+    elif self.config.regressor == "rotdim":
+      output_shape += [
+          (None, self.config.TRAIN_ROIS_PER_IMAGE, 1),  # RBOX angle
+          (None, self.config.TRAIN_ROIS_PER_IMAGE, 2)
+      ]  # RBOX dimensions
 
     return output_shape
 
@@ -382,6 +447,9 @@ class DetectionTargetLayer(KE.Layer):
 
     if self.config.regressor == "deltas":
       mask += [None]
+    elif self.config.regressor == "rotdim":
+      mask += [None, None]
+
     return mask
 
 

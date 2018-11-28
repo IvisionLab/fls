@@ -4,5 +4,5 @@
     "valid": "assets/annotations/gemini_valid.json",
     "test": "assets/annotations/gemini_test.json"
   },
-  "regressor": "deltas"
+  "regressor": "rotdim"
 }
