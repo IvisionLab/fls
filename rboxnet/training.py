@@ -65,7 +65,7 @@ class Training(base.Base):
         base.rpn_bbox_loss_layer(config, input_rpn_bbox, input_rpn_match, rpn_bbox)
 
     if config.regressor == "deltas":
-      # Generate detection targets with rotated bounding-box using deltas
+      # Generate detection targets with rotated bounding-box using top line deltas
       rois, target_class_ids, target_bbox, target_rbox_deltas = \
           base.detection_target_layer(config,
             [rpn_rois, input_gt_class_ids, gt_boxes, gt_rboxes])
@@ -74,6 +74,11 @@ class Training(base.Base):
       rois, target_class_ids, target_bbox, target_rbox_angles, target_rbox_dim = \
           base.detection_target_layer(config,
             [rpn_rois, input_gt_class_ids, gt_boxes, gt_rboxes, input_gt_angles])
+    elif config.regressor == "verts":
+      # Generate detection targets with rotated bounding-box using vertices
+      rois, target_class_ids, target_bbox, target_rbox_verts = \
+          base.detection_target_layer(config,
+            [rpn_rois, input_gt_class_ids, gt_boxes, gt_rboxes])
     else:
       # Generate detection targets
       rois, target_class_ids, target_bbox = \
@@ -111,15 +116,15 @@ class Training(base.Base):
          rbox_class_loss, rbox_bbox_loss]
 
     if config.regressor == "deltas":
-      # RBOX deltas regressor layers
+      # RBOX topline deltas regressor layers
       rbox_deltas = \
           base.rbox_deltas_regressor_layers(fc_layers, config.NUM_CLASSES)
-      # Add RBOX deltas to outputs
+      # Add RBOX topline deltas to outputs
       outputs += [rbox_deltas]
-      # RBOX deltas loss
+      # RBOX topline deltas loss
       rbox_deltas_loss = \
           base.rbox_deltas_loss_layer(target_rbox_deltas, target_class_ids, rbox_deltas)
-      # Add RBOX deltas loss to outputs
+      # Add RBOX topline deltas loss to outputs
       outputs_loss += [rbox_deltas_loss]
     elif config.regressor == "rotdim":
       # RBOX angles+dimension regressor layers
@@ -134,6 +139,17 @@ class Training(base.Base):
       rbox_dim_loss = \
           base.rbox_dim_loss_layer(target_rbox_dim, target_class_ids, rbox_dim)
       outputs_loss += [rbox_angles_loss, rbox_dim_loss]
+    elif config.regressor == "verts":
+      # RBOX vertices regressor layers
+      rbox_verts = \
+          base.rbox_verts_regressor_layers(fc_layers, config.NUM_CLASSES)
+      # Add RBOX vertices to outputs
+      outputs += [rbox_verts]
+      # RBOX vertices loss
+      rbox_verts_loss = \
+          base.rbox_verts_loss_layer(target_rbox_verts, target_class_ids, rbox_verts)
+      # Add RBOX topline deltas loss to outputs
+      outputs_loss += [rbox_verts_loss]
 
     outputs += outputs_loss
 
@@ -221,6 +237,8 @@ class Training(base.Base):
       loss_names += ["rbox_deltas_loss"]
     elif self.config.regressor == "rotdim":
       loss_names += ["rbox_angles_loss", "rbox_dim_loss"]
+    elif self.config.regressor == "verts":
+      loss_names += ["rbox_verts_loss"]
 
     for name in loss_names:
       layer = self.keras_model.get_layer(name)
@@ -301,4 +319,4 @@ class Training(base.Base):
     return KL.Lambda(lambda x: x / image_scale)(input_gt_rboxes)
 
   def is_valid_regressor(self, rbox_regr):
-    return rbox_regr == "deltas" or rbox_regr == "rotdim" or rbox_regr == "global"
+    return rbox_regr == "deltas" or rbox_regr == "rotdim" or rbox_regr == "verts"

@@ -27,7 +27,7 @@ MODEL_DIR = os.path.join(ROOT_DIR, "logs")
 
 # Path to Shapes trained weights
 RBOXNET_MODEL_PATH = os.path.join(
-    ROOT_DIR, "logs/gemini20181126T2216/rboxnet_gemini_0067.h5")
+    ROOT_DIR, "logs/gemini20181126T2216/rboxnet_gemini_0160.h5")
 
 # Path to configuration file
 CONFIG_PATH = os.path.join(ROOT_DIR, "cfg/gemini_deltas.json")
@@ -179,13 +179,13 @@ else:
 color = "red"
 style = "solid"
 alpha = 1
-fig, ax = plt.subplots(1, figsize=(12, 12))
+fig, ax1 = plt.subplots(1, figsize=(12, 12))
+
+fig, ax2 = plt.subplots(1, figsize=(12, 12))
 
 for i, cls_id in enumerate(class_ids):
   print("{0}: {1}".format(dataset.class_info[cls_id]['name'], scores[i]))
-
   y1, x1, y2, x2 = boxes[i]
-  ty1, tx1, ty2, tx2 = tlines[i]
   p = patches.Rectangle((x1, y1),
                         x2 - x1,
                         y2 - y1,
@@ -194,13 +194,13 @@ for i, cls_id in enumerate(class_ids):
                         linestyle=style,
                         edgecolor=color,
                         facecolor='none')
-  ax.add_patch(p)
-  ax.add_line(lines.Line2D([tx1, tx2], [ty1, ty2], color=color))
+  ax1.add_patch(p)
 
   verts = np.reshape(rboxes[i], (-1, 2))
   verts = np.fliplr(verts)
-  p = Polygon(verts, facecolor="none", edgecolor=color)
-  ax.add_patch(p)
+  p = Polygon(verts, facecolor="none", linewidth=2, edgecolor=color)
+  ax2.add_patch(p)
 
-ax.imshow(image.astype(np.uint8))
+ax1.imshow(image.astype(np.uint8))
+ax2.imshow(image.astype(np.uint8))
 plt.show()

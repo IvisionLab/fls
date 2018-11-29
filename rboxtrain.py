@@ -5,7 +5,7 @@ from rboxnet import training, dataset, config
 
 
 class TrainingConfig(config.Config):
-  NAME = "gemini_resnet50_rotdim"
+  NAME = "gemini"
   GPU_COUNT = 1
   IMAGES_PER_GPU = 2
   NUM_CLASSES = 1 + 3
@@ -52,6 +52,10 @@ if __name__ == '__main__':
 
     config = TrainingConfig()
     config.regressor = cfg['regressor']
+    if config.regressor:
+      config.NAME="{0}_{1}_{2}".format(config.NAME, config.BACKBONE, config.regressor)
+      print("Configuration Name: ", config.NAME)
+
     net = training.Training(config)
 
     if args.model:

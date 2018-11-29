@@ -220,6 +220,11 @@ def rbox_dim_loss_layer(target_rbox_dim, target_class_ids, rbox_dim):
       lambda x: model.custom_loss_graph(*x),
       name="rbox_dim_loss")([target_rbox_dim, target_class_ids, rbox_dim])
 
+def rbox_verts_loss_layer(target_rbox_verts, target_class_ids, rbox_verts):
+  return KL.Lambda(
+      lambda x: model.custom_loss_graph(*x), name="rbox_verts_loss")(
+          [target_rbox_verts, target_class_ids, rbox_verts])
+
 
 def roi_align_layers(rois, feature_maps, config):
   return model.PyramidROIAlign([config.POOL_SIZE, config.POOL_SIZE],
@@ -266,7 +271,7 @@ def bbox_classifier_layers(shared, num_classes):
 
 
 def rbox_deltas_regressor_layers(shared, num_classes):
-  # rotated bounding box deltas
+  # rotated bounding box topline deltas
   x = KL.TimeDistributed(
       KL.Dense(num_classes * 4, activation='linear'),
       name='rbox_deltas_fc')(shared)
@@ -295,6 +300,15 @@ def rbox_rotdim_regressor_layers(shared, num_classes):
 
   return rbox_angles, rbox_dim
 
+def rbox_verts_regressor_layers(shared, num_classes):
+  # rotated bounding vertices
+  x = KL.TimeDistributed(
+      KL.Dense(num_classes * 8, activation='linear'),
+      name='rbox_verts_fc')(shared)
+
+  s = K.int_shape(x)
+  rbox_verts = KL.Reshape((s[1], num_classes, 8), name="rbox_verts")(x)
+  return rbox_verts
 
 def detection_target_layer(config, inputs):
   return DetectionTargetLayer(config, name="proposal_targets")(inputs)
@@ -419,6 +433,10 @@ def detection_targets_graph(config, proposals, gt_class_ids, gt_boxes,
       rbox_dim = tf.pad(rbox_dim, [(0, N + P), (0, 0)])
       rbox_angles = tf.pad(rbox_angles, [(0, N + P), (0, 0)])
       return rois, roi_gt_class_ids, deltas, rbox_angles, rbox_dim
+    elif config.regressor == "verts":
+      roi_gt_rboxes = tf.pad(roi_gt_rboxes, [(0, N + P), (0, 0)])
+      return rois, roi_gt_class_ids, deltas, roi_gt_rboxes
+
 
   return rois, roi_gt_class_ids, deltas
 
@@ -433,10 +451,12 @@ def refine_detections_graph(rois, probs, deltas, window, config, **kwargs):
   deltas_specific = tf.gather_nd(deltas, indices)
   # Apply bounding box deltas
   # Shape: [boxes, (y1, x1, y2, x2)] in normalized coordinates
-  norm_rois = model.apply_box_deltas_graph(rois, deltas_specific * config.BBOX_STD_DEV)
+  norm_rois = model.apply_box_deltas_graph(
+      rois, deltas_specific * config.BBOX_STD_DEV)
   # Convert coordiates to image domain
   height, width = config.IMAGE_SHAPE[:2]
-  scaled_rois = norm_rois * tf.constant([height, width, height, width], dtype=tf.float32)
+  scaled_rois = norm_rois * tf.constant([height, width, height, width],
+                                        dtype=tf.float32)
   # Clip boxes to image window
   clipped_rois = model.clip_boxes_graph(scaled_rois, window)
   # Round and cast to int since we're deadling with pixels now
@@ -546,6 +566,13 @@ class DetectionTargetLayer(KE.Layer):
           lambda a, b, c, d, e: detection_targets_graph(self.config, a, b, c, gt_rboxes=d, gt_angles=e),
           self.config.IMAGES_PER_GPU,
           names=names)
+    elif self.config.regressor == "verts":
+      names += ["target_rbox_verts"]
+      outputs = utils.batch_slice(
+          inputs,
+          lambda a, b, c, d: detection_targets_graph(self.config, a, b, c, gt_rboxes=d),
+          self.config.IMAGES_PER_GPU,
+          names=names)
     else:
       outputs = utils.batch_slice(
           inputs,
@@ -556,7 +583,6 @@ class DetectionTargetLayer(KE.Layer):
     return outputs
 
   def compute_output_shape(self, input_shape):
-
     output_shape = [
         (None, self.config.TRAIN_ROIS_PER_IMAGE, 4),  # rois
         (None, 1),  # class_ids
@@ -565,19 +591,21 @@ class DetectionTargetLayer(KE.Layer):
 
     if self.config.regressor == "deltas":
       output_shape += [(None, self.config.TRAIN_ROIS_PER_IMAGE,
-                        4)]  # RBOX deltas
+                        4)]  # RBOX topline deltas
     elif self.config.regressor == "rotdim":
       output_shape += [
           (None, self.config.TRAIN_ROIS_PER_IMAGE, 1),  # RBOX angle
           (None, self.config.TRAIN_ROIS_PER_IMAGE, 2)
       ]  # RBOX dimensions
-
+    elif self.config.regressor == "verts":
+      output_shape += [(None, self.config.TRAIN_ROIS_PER_IMAGE,
+                        8)]  # RBOX vertices
     return output_shape
 
   def compute_mask(self, inputs, mask=None):
     mask = [None, None, None]
 
-    if self.config.regressor == "deltas":
+    if self.config.regressor == "deltas" or self.config.regressor == "verts":
       mask += [None]
     elif self.config.regressor == "rotdim":
       mask += [None, None]
