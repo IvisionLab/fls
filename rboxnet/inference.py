@@ -18,6 +18,8 @@ class Inference(base.Base):
     input_image = KL.Input(
         shape=config.IMAGE_SHAPE.tolist(), name="input_image")
 
+    input_image_meta = KL.Input(shape=[None], name="input_image_meta")
+
     # Feature extractor layer
     [P2, P3, P4, P5, P6] = base.feature_extractor_layers(input_image, config)
     rpn_feature_maps = [P2, P3, P4, P5, P6]
@@ -31,10 +33,30 @@ class Inference(base.Base):
 
     # RPN layer
     rpn_class_logits, rpn_class, rpn_bbox, rpn_rois = base.rpn_layers(
-        rpn_feature_maps, self.anchors, config)
+        rpn_feature_maps, self.anchors, config.POST_NMS_ROIS_INFERENCE, config)
 
-    inputs = [input_image]
-    outputs = [rpn_rois, rpn_class, rpn_bbox]
+    # ROI Align layer
+    roi_align = base.roi_align_layers(rpn_rois, rbox_feature_maps, config)
+
+    # Two 1024 FC layers
+    fc_layers = base.full_connected_layers(roi_align, config)
+
+    # Bounding box classifier layers
+    rbox_class_logits, rbox_class, rbox_bbox = \
+        base.bbox_classifier_layers(fc_layers, config.NUM_CLASSES)
+
+    # Detection inputs
+    detection_layer_inputs = [rpn_rois, rbox_class, rbox_bbox, input_image_meta]
+
+    if (config.regressor == "deltas"):
+      rbox_deltas = base.rbox_deltas_regressor_layers(fc_layers, config.NUM_CLASSES)
+      detection_layer_inputs += [rbox_deltas]
+
+    rbox_dts = \
+      base.detection_layer(config, detection_layer_inputs)
+
+    inputs = [input_image, input_image_meta]
+    outputs = [rpn_rois, rpn_class, rpn_bbox, rbox_dts]
 
     return KM.Model(inputs, outputs, name='rboxnet')
 
@@ -54,7 +76,7 @@ class Inference(base.Base):
       log("molded_images", molded_images)
       log("image_metas", image_metas)
 
-    rpn_rois, rpn_class, rpn_bbox = self.keras_model.predict([molded_images],
-                                                             verbose=0)
+    rpn_rois, rpn_class, rpn_bbox, rbox_dts = self.keras_model.predict(
+        [molded_images, image_metas], verbose=0)
 
-    return [rpn_rois, rpn_class, rpn_bbox]
+    return [rpn_rois, rpn_class, rpn_bbox, rbox_dts]

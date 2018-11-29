@@ -53,7 +53,8 @@ class Training(base.Base):
 
     # RPN layer
     rpn_class_logits, rpn_class, rpn_bbox, rpn_rois = base.rpn_layers(
-        rpn_feature_maps, self.anchors, config)
+        rpn_feature_maps, self.anchors, config.POST_NMS_ROIS_TRAINING,
+        config)
 
     # RPN class loss
     rpn_class_loss = \

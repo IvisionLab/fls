@@ -5,7 +5,7 @@ from rboxnet import training, dataset, config
 
 
 class TrainingConfig(config.Config):
-  NAME = "gemini"
+  NAME = "gemini_resnet50_rotdim"
   GPU_COUNT = 1
   IMAGES_PER_GPU = 2
   NUM_CLASSES = 1 + 3
@@ -62,21 +62,21 @@ if __name__ == '__main__':
       print("Model: {0}".format(model_path))
       net.load_weights(model_path, by_name=True)
 
-    # print("Training network heads")
-    # net.train(
-    #     dataset_train,
-    #     dataset_valid,
-    #     learning_rate=config.LEARNING_RATE,
-    #     epochs=40,
-    #     layers='heads')
+    print("Training network heads")
+    net.train(
+        dataset_train,
+        dataset_valid,
+        learning_rate=config.LEARNING_RATE,
+        epochs=40,
+        layers='heads')
 
-    # print("Fine tune Resnet stage 4 and up")
-    # net.train(
-    #     dataset_train,
-    #     dataset_valid,
-    #     learning_rate=config.LEARNING_RATE,
-    #     epochs=120,
-    #     layers='4+')
+    print("Fine tune Resnet stage 4 and up")
+    net.train(
+        dataset_train,
+        dataset_valid,
+        learning_rate=config.LEARNING_RATE,
+        epochs=120,
+        layers='4+')
 
     print("Fine tune all layers")
     net.train(

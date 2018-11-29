@@ -16,7 +16,7 @@ from rboxnet.model import rpn_class_loss_graph, rpn_bbox_loss_graph
 from rboxnet.model import log, fullmatch
 
 
-def compute_rbox_deltas(box, rbox):
+def line_to_deltas(box, rbox):
   box = tf.cast(box, tf.float32)
   rbox = tf.cast(rbox, tf.float32)
 
@@ -30,6 +30,29 @@ def compute_rbox_deltas(box, rbox):
 
   result = tf.stack([dy1, dx1, dy2, dx2], axis=1)
   return result
+
+
+def deltas_to_line_graph(boxes, deltas):
+  height = boxes[:, 2] - boxes[:, 0]
+  width = boxes[:, 3] - boxes[:, 1]
+  y1 = deltas[:, 0] * height + boxes[:, 0]
+  x1 = deltas[:, 1] * width + boxes[:, 1]
+  y2 = boxes[:, 2] - deltas[:, 2] * height
+  x2 = boxes[:, 3] - deltas[:, 3] * width
+  result = tf.stack([y1, x1, y2, x2], axis=1, name="deltas_to_line_out")
+  return result
+
+
+def clip_line_graph(line, boxes):
+  wy1 = boxes[:, 0]
+  wx1 = boxes[:, 1]
+  wy2 = boxes[:, 2]
+  wx2 = boxes[:, 3]
+  y1 = tf.maximum(tf.minimum(line[:, 0], wy2), wy1)
+  x1 = tf.maximum(tf.minimum(line[:, 1], wx2), wx1)
+  y2 = tf.maximum(tf.minimum(line[:, 2], wy2), wy1)
+  x2 = tf.maximum(tf.minimum(line[:, 3], wx2), wx1)
+  return tf.stack([y1, x1, y2, x2], axis=1, name="clipped_line")
 
 
 def check_image_size(config):
@@ -74,7 +97,7 @@ def feature_extractor_layers(input_image, config):
   return P2, P3, P4, P5, P6
 
 
-def rpn_layers(rpn_feature_maps, anchors, config):
+def rpn_layers(rpn_feature_maps, anchors, proposal_count, config):
   # RPN Model
   rpn = model.build_rpn_model(config.RPN_ANCHOR_STRIDE,
                               len(config.RPN_ANCHOR_RATIOS), 256)
@@ -97,7 +120,7 @@ def rpn_layers(rpn_feature_maps, anchors, config):
   # Generate proposals
   # Proposals are [batch, N, (y1, x1, y2, x2)] in normalized coordinates and zero padded
   rpn_rois = model.ProposalLayer(
-      proposal_count=config.POST_NMS_ROIS_TRAINING,
+      proposal_count=proposal_count,
       nms_threshold=config.RPN_NMS_THRESHOLD,
       name="ROI",
       anchors=anchors,
@@ -185,15 +208,18 @@ def rbox_deltas_loss_layer(target_rbox_deltas, target_class_ids, rbox_deltas):
       lambda x: model.custom_loss_graph(*x), name="rbox_deltas_loss")(
           [target_rbox_deltas, target_class_ids, rbox_deltas])
 
+
 def rbox_angles_loss_layer(target_rbox_angles, target_class_ids, rbox_angles):
   return KL.Lambda(
       lambda x: model.custom_loss_graph(*x), name="rbox_angles_loss")(
           [target_rbox_angles, target_class_ids, rbox_angles])
 
+
 def rbox_dim_loss_layer(target_rbox_dim, target_class_ids, rbox_dim):
   return KL.Lambda(
-      lambda x: model.custom_loss_graph(*x), name="rbox_dim_loss")(
-          [target_rbox_dim, target_class_ids, rbox_dim])
+      lambda x: model.custom_loss_graph(*x),
+      name="rbox_dim_loss")([target_rbox_dim, target_class_ids, rbox_dim])
+
 
 def roi_align_layers(rois, feature_maps, config):
   return model.PyramidROIAlign([config.POOL_SIZE, config.POOL_SIZE],
@@ -249,6 +275,7 @@ def rbox_deltas_regressor_layers(shared, num_classes):
   rbox_deltas = KL.Reshape((s[1], num_classes, 4), name="rbox_deltas")(x)
   return rbox_deltas
 
+
 def rbox_rotdim_regressor_layers(shared, num_classes):
   # angles regressor
   x = KL.TimeDistributed(
@@ -268,8 +295,13 @@ def rbox_rotdim_regressor_layers(shared, num_classes):
 
   return rbox_angles, rbox_dim
 
+
 def detection_target_layer(config, inputs):
   return DetectionTargetLayer(config, name="proposal_targets")(inputs)
+
+
+def detection_layer(config, inputs):
+  return DetectionLayer(config, name="rbox_detection")(inputs)
 
 
 def detection_targets_graph(config, proposals, gt_class_ids, gt_boxes,
@@ -358,7 +390,7 @@ def detection_targets_graph(config, proposals, gt_class_ids, gt_boxes,
     roi_gt_rboxes = tf.gather(gt_rboxes, roi_gt_box_assignment)
 
     if config.regressor == "deltas":
-      rbox_deltas = compute_rbox_deltas(roi_gt_boxes, roi_gt_rboxes)
+      rbox_deltas = line_to_deltas(roi_gt_boxes, roi_gt_rboxes)
       rbox_deltas /= 0.2
       rbox_deltas = tf.pad(rbox_deltas, [(0, N + P), (0, 0)])
       return rois, roi_gt_class_ids, deltas, rbox_deltas
@@ -391,8 +423,107 @@ def detection_targets_graph(config, proposals, gt_class_ids, gt_boxes,
   return rois, roi_gt_class_ids, deltas
 
 
+def refine_detections_graph(rois, probs, deltas, window, config, **kwargs):
+  # Class IDs per ROI
+  class_ids = tf.argmax(probs, axis=1, output_type=tf.int32)
+  # Class probability of the top class of each ROI
+  indices = tf.stack([tf.range(probs.shape[0]), class_ids], axis=1)
+  class_scores = tf.gather_nd(probs, indices)
+  # Class-specific bounding box deltas
+  deltas_specific = tf.gather_nd(deltas, indices)
+  # Apply bounding box deltas
+  # Shape: [boxes, (y1, x1, y2, x2)] in normalized coordinates
+  norm_rois = model.apply_box_deltas_graph(rois, deltas_specific * config.BBOX_STD_DEV)
+  # Convert coordiates to image domain
+  height, width = config.IMAGE_SHAPE[:2]
+  scaled_rois = norm_rois * tf.constant([height, width, height, width], dtype=tf.float32)
+  # Clip boxes to image window
+  clipped_rois = model.clip_boxes_graph(scaled_rois, window)
+  # Round and cast to int since we're deadling with pixels now
+  refined_rois = tf.to_int32(tf.rint(clipped_rois))
+
+  if config.regressor == "deltas" and not kwargs.get('rbox_deltas') == None:
+    rbox_deltas = kwargs.get('rbox_deltas')
+    rbox_deltas = tf.gather_nd(rbox_deltas, indices)
+    rbox_line = deltas_to_line_graph(norm_rois, rbox_deltas * 0.2)
+    rbox_line *= tf.constant([height, width, height, width], dtype=tf.float32)
+    rbox_line = clip_line_graph(rbox_line, clipped_rois)
+    rbox_line = tf.to_int32(tf.rint(rbox_line))
+
+  # Filter out background boxes
+  keep = tf.where(class_ids > 0)[:, 0]
+  # Filter out low confidence boxes
+  if config.DETECTION_MIN_CONFIDENCE:
+    conf_keep = tf.where(class_scores >= config.DETECTION_MIN_CONFIDENCE)[:, 0]
+    keep = tf.sets.set_intersection(
+        tf.expand_dims(keep, 0), tf.expand_dims(conf_keep, 0))
+    keep = tf.sparse_tensor_to_dense(keep)[0]
+
+  # Apply per-class NMS
+  # 1. Prepare variables
+  pre_nms_class_ids = tf.gather(class_ids, keep)
+  pre_nms_scores = tf.gather(class_scores, keep)
+  pre_nms_rois = tf.gather(refined_rois, keep)
+  unique_pre_nms_class_ids = tf.unique(pre_nms_class_ids)[0]
+
+  def nms_keep_map(class_id):
+    """Apply Non-Maximum Suppression on ROIs of the given class."""
+    # Indices of ROIs of the given class
+    ixs = tf.where(tf.equal(pre_nms_class_ids, class_id))[:, 0]
+    # Apply NMS
+    class_keep = tf.image.non_max_suppression(
+        tf.to_float(tf.gather(pre_nms_rois, ixs)),
+        tf.gather(pre_nms_scores, ixs),
+        max_output_size=config.DETECTION_MAX_INSTANCES,
+        iou_threshold=config.DETECTION_NMS_THRESHOLD)
+    # Map indicies
+    class_keep = tf.gather(keep, tf.gather(ixs, class_keep))
+    # Pad with -1 so returned tensors have the same shape
+    gap = config.DETECTION_MAX_INSTANCES - tf.shape(class_keep)[0]
+    class_keep = tf.pad(
+        class_keep, [(0, gap)], mode='CONSTANT', constant_values=-1)
+    # Set shape so map_fn() can infer result shape
+    class_keep.set_shape([config.DETECTION_MAX_INSTANCES])
+    return class_keep
+
+  # 2. Map over class IDs
+  nms_keep = tf.map_fn(nms_keep_map, unique_pre_nms_class_ids, dtype=tf.int64)
+  # 3. Merge results into one list, and remove -1 padding
+  nms_keep = tf.reshape(nms_keep, [-1])
+  nms_keep = tf.gather(nms_keep, tf.where(nms_keep > -1)[:, 0])
+  # 4. Compute intersection between keep and nms_keep
+  keep = tf.sets.set_intersection(
+      tf.expand_dims(keep, 0), tf.expand_dims(nms_keep, 0))
+  keep = tf.sparse_tensor_to_dense(keep)[0]
+  # Keep top detections
+  roi_count = config.DETECTION_MAX_INSTANCES
+  class_scores_keep = tf.gather(class_scores, keep)
+  num_keep = tf.minimum(tf.shape(class_scores_keep)[0], roi_count)
+  top_ids = tf.nn.top_k(class_scores_keep, k=num_keep, sorted=True)[1]
+  keep = tf.gather(keep, top_ids)
+
+  # Arrange output as [N, (y1, x1, y2, x2, class_id, score)]
+  # Coordinates are in image domain.
+
+  outputs = [
+      tf.to_float(tf.gather(class_ids, keep))[..., tf.newaxis],
+      tf.gather(class_scores, keep)[..., tf.newaxis],
+      tf.to_float(tf.gather(refined_rois, keep))
+  ]
+
+  if config.regressor == "deltas" and not rbox_line == None:
+    outputs += [tf.to_float(tf.gather(rbox_line, keep))]
+
+  detections = tf.concat(outputs, axis=1)
+
+  # Pad with zeros if detections < DETECTION_MAX_INSTANCES
+  gap = config.DETECTION_MAX_INSTANCES - tf.shape(detections)[0]
+  detections = tf.pad(detections, [(0, gap), (0, 0)], "CONSTANT")
+  return detections
+
+
 ############################################################
-#  Base Class
+#  DetectionTargetLayer Class
 ############################################################
 class DetectionTargetLayer(KE.Layer):
   def __init__(self, config, **kwargs):
@@ -433,7 +564,8 @@ class DetectionTargetLayer(KE.Layer):
     ]
 
     if self.config.regressor == "deltas":
-      output_shape += [(None, self.config.TRAIN_ROIS_PER_IMAGE, 4)]  # RBOX deltas
+      output_shape += [(None, self.config.TRAIN_ROIS_PER_IMAGE,
+                        4)]  # RBOX deltas
     elif self.config.regressor == "rotdim":
       output_shape += [
           (None, self.config.TRAIN_ROIS_PER_IMAGE, 1),  # RBOX angle
@@ -451,6 +583,49 @@ class DetectionTargetLayer(KE.Layer):
       mask += [None, None]
 
     return mask
+
+
+# ############################################################
+# #  DetectionLayer Class
+# ############################################################
+class DetectionLayer(KE.Layer):
+  def __init__(self, config=None, **kwargs):
+    super(DetectionLayer, self).__init__(**kwargs)
+    self.config = config
+
+  def call(self, inputs):
+
+    rois = inputs[0]
+    rbox_class = inputs[1]
+    rbox_bbox = inputs[2]
+    image_meta = inputs[3]
+
+    _, _, window, _ = model.parse_image_meta_graph(image_meta)
+
+    if self.config.regressor == "deltas":
+      rbox_deltas = inputs[4]
+      detections_batch = utils.batch_slice(
+          [rois, rbox_class, rbox_bbox, window, rbox_deltas],
+          lambda a, b, c, d, e: refine_detections_graph(a, b, c, d, self.config, rbox_deltas=e),
+          self.config.IMAGES_PER_GPU)
+      output_size = 10
+    else:
+      detections_batch = utils.batch_slice(
+          [rois, rbox_class, rbox_bbox, window],
+          lambda a, b, c, d: refine_detections_graph(a, b, c, d, self.config),
+          self.config.IMAGES_PER_GPU)
+      output_size = 6
+
+    return tf.reshape(detections_batch, [
+        self.config.BATCH_SIZE, self.config.DETECTION_MAX_INSTANCES,
+        output_size
+    ])
+
+  def compute_output_shape(self, input_shape):
+    if self.config.regressor == "deltas":
+      return (None, self.config.DETECTION_MAX_INSTANCES, 10)
+
+    return (None, self.config.DETECTION_MAX_INSTANCES, 6)
 
 
 ############################################################
