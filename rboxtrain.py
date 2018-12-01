@@ -7,10 +7,10 @@ from rboxnet import training, dataset, config
 class TrainingConfig(config.Config):
   NAME = "gemini"
   GPU_COUNT = 1
-  IMAGES_PER_GPU = 2
+  IMAGES_PER_GPU = 1
   NUM_CLASSES = 1 + 3
   IMAGE_MAX_DIM = 448
-  BACKBONE = "resnet50"
+  BACKBONE = "resnet101"
   regressor = None
 
 if __name__ == '__main__':

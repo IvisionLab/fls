@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import sys
-import rboxnet.annotation.rbox as rboxanns
+from rboxnet import anns
 
 if __name__ == '__main__':
     import argparse
@@ -14,20 +14,23 @@ if __name__ == '__main__':
                         default="annotations.json",
                         help="The output filepath")
 
-    parser.add_argument("--validation",
+    parser.add_argument("--split",
                         type=bool,
                         default=False,
-                        help="Save validation dataset")
+                        help="Split dataset into train and validation")
 
     parser.add_argument("--limit",
                         type=int,
                         help="Maximum number of images per classes")
 
-    parser.add_argument("--rbox_mask",
+    parser.add_argument("--use-mask",
+                        const=True,
+                        nargs='?',
                         type=bool,
-                        default=True,
+                        metavar="<True/False>",
+                        default=False,
                         help="Save annotation mask")
 
     args = parser.parse_args()
 
-    rboxanns.exec(args)
+    anns.rbox.generate(args)
