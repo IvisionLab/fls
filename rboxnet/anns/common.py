@@ -123,3 +123,32 @@ def get_ground_truth(img_path):
   gt_rbox = gt[4:]
   gt_rbox[0:2] += gt_box[0:2]
   return gt_id, gt_box, gt_rbox
+
+def list_files(base_folder, limit_per_cls):
+  import fnmatch
+  import random
+
+  clsid_cnt = {}
+  all_anns = []
+  for root, dirs, files in os.walk(base_folder):
+    files = fnmatch.filter(files, '*.png')
+    files = fnmatch.filter(files, '*[!-mask].png')
+    files = sorted(files)
+
+    for name in files:
+      img_path = os.path.join(root, name)
+      file_name = img_path.replace(base_folder, '')
+      clsid, gt = get_rbbox_annotation(img_path)
+
+      if limit_per_cls > 0 and \
+          clsid in clsid_cnt and \
+          clsid_cnt[clsid] >= limit_per_cls:
+        break
+
+      if clsid in clsid_cnt:
+        clsid_cnt[clsid] += 1
+      else:
+        clsid_cnt[clsid] = 1
+      all_anns.append({'file_name': file_name, 'clsid': clsid, 'gt': gt})
+
+  return all_anns

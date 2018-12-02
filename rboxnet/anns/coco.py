@@ -143,39 +143,9 @@ def build_coco_annotations(base_folder, all_anns, labels, use_rbbox):
   return holder.coco
 
 
-def list_files(base_folder, limit_per_cls):
-  import fnmatch
-  import random
-
-  clsid_cnt = {}
-  all_anns = []
-  for root, dirs, files in os.walk(base_folder):
-    files = fnmatch.filter(files, '*.png')
-    files = fnmatch.filter(files, '*[!-mask].png')
-    files = sorted(files)
-
-    for name in files:
-      img_path = os.path.join(root, name)
-      file_name = img_path.replace(base_folder, '')
-      clsid, gt = common.get_rbbox_annotation(img_path)
-
-      if limit_per_cls > 0 and \
-          clsid in clsid_cnt and \
-          clsid_cnt[clsid] >= limit_per_cls:
-        break
-
-      if clsid in clsid_cnt:
-        clsid_cnt[clsid] += 1
-      else:
-        clsid_cnt[clsid] = 1
-      all_anns.append({'file_name': file_name, 'clsid': clsid, 'gt': gt})
-
-  return all_anns
-
-
 def generate(args):
 
-  all_anns = list_files(args.base_folder, args.limit)
+  all_anns = common.list_files(args.base_folder, args.limit)
   coco_anns = build_coco_annotations(args.base_folder, all_anns,
                                      ["ssiv_bahia", "jequitaia", "balsa"],
                                      args.use_rbbox)
