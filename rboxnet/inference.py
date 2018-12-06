@@ -4,6 +4,7 @@ import keras.layers as KL
 import keras.models as KM
 from rboxnet import model, base, utils
 from rboxnet.model import log
+from rboxnet.base import unmold_detections, top_line_to_vertices, vertices_fliplr
 
 
 class Inference(base.Base):
@@ -46,11 +47,25 @@ class Inference(base.Base):
         base.bbox_classifier_layers(fc_layers, config.NUM_CLASSES)
 
     # Detection inputs
-    detection_layer_inputs = [rpn_rois, rbox_class, rbox_bbox, input_image_meta]
+    detection_layer_inputs = [
+        rpn_rois, rbox_class, rbox_bbox, input_image_meta
+    ]
 
-    if (config.regressor == "deltas"):
-      rbox_deltas = base.rbox_deltas_regressor_layers(fc_layers, config.NUM_CLASSES)
+    if config.regressor == "deltas":
+      # RBOX top line deltas regressor layers
+      rbox_deltas = base.rbox_deltas_regressor_layers(fc_layers,
+                                                      config.NUM_CLASSES)
       detection_layer_inputs += [rbox_deltas]
+    elif config.regressor == "rotdim":
+      # RBOX angles+dimension regressor layers
+      rbox_angles, rbox_dim = \
+          base.rbox_rotdim_regressor_layers(fc_layers, config.NUM_CLASSES)
+      detection_layer_inputs += [rbox_angles, rbox_dim]
+    elif config.regressor == "verts":
+      # RBOX vertices regressor layers
+      rbox_verts = \
+          base.rbox_verts_regressor_layers(fc_layers, config.NUM_CLASSES)
+      detection_layer_inputs += [rbox_verts]
 
     rbox_dts = \
       base.detection_layer(config, detection_layer_inputs)
@@ -77,6 +92,25 @@ class Inference(base.Base):
       log("image_metas", image_metas)
 
     rpn_rois, rpn_class, rpn_bbox, rbox_dts = self.keras_model.predict(
-        [molded_images, image_metas], verbose=0)
+        [molded_images, image_metas], verbose=verbose)
 
-    return [rpn_rois, rpn_class, rpn_bbox, rbox_dts]
+    detections = []
+    for i, image in enumerate(images):
+      rotated_boxes = None
+      if self.config.regressor == "deltas" or \
+          self.config.regressor == "rotdim" or \
+          self.config.regressor == "verts":
+        class_ids, scores, boxes, rotated_boxes = unmold_detections(
+            rbox_dts[i], image.shape, windows[i], self.config)
+      else:
+        class_ids, scores, boxes = unmold_detections(rbox_dts[i], image.shape,
+                                                     windows[i], self.config)
+
+      detections.append({
+          "class_ids": class_ids,
+          "scores": scores,
+          "boxes": boxes,
+          "rotated_boxes": rotated_boxes
+      })
+
+    return detections

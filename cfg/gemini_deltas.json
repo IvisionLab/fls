@@ -1,8 +1,8 @@
 {
   "annotations": {
-    "train": "assets/annotations/gemini_train.json",
-    "valid": "assets/annotations/gemini_valid.json",
-    "test": "assets/annotations/gemini_test.json"
+    "train": "/home/gustavoneves/data/gemini/annotations/gemini_train.json",
+    "valid": "/home/gustavoneves/data/gemini/annotations/gemini_valid.json",
+    "test": "/home/gustavoneves/data/gemini/annotations/gemini_test.json"
   },
   "regressor": "deltas"
 }

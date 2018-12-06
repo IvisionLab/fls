@@ -74,20 +74,20 @@ if __name__ == '__main__':
         epochs=40,
         layers='heads')
 
-    print("Fine tune Resnet stage 4 and up")
-    net.train(
-        dataset_train,
-        dataset_valid,
-        learning_rate=config.LEARNING_RATE,
-        epochs=120,
-        layers='4+')
+    # print("Fine tune Resnet stage 4 and up")
+    # net.train(
+    #     dataset_train,
+    #     dataset_valid,
+    #     learning_rate=config.LEARNING_RATE,
+    #     epochs=120,
+    #     layers='4+')
 
-    print("Fine tune all layers")
-    net.train(
-        dataset_train,
-        dataset_valid,
-        learning_rate=config.LEARNING_RATE / 10,
-        epochs=160,
-        layers='all')
+    # print("Fine tune all layers")
+    # net.train(
+    #     dataset_train,
+    #     dataset_valid,
+    #     learning_rate=config.LEARNING_RATE / 10,
+    #     epochs=160,
+    #     layers='all')
   else:
     print("Please inform the configuration")

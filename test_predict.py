@@ -6,46 +6,113 @@
 import os
 import json
 import random
+import time
+import cv2
+import datetime
 import numpy as np
 import tensorflow as tf
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-import matplotlib.lines as lines
-from matplotlib.patches import Polygon
-import rboxtrain
 import rboxnet
 import rboxnet.dataset
-from rboxnet import inference, config, model
+from rboxnet import inference, config, model, drawing
+from rboxnet.base import unmold_detections, top_line_to_vertices, vertices_fliplr
+from rboxnet.eval import calc_ious, plot_average_recall
+
+import rboxtrain
+#%%
+# define global parameters
+#################################################
 
 # Root directory of the project
-# ROOT_DIR = os.getcwd()
-ROOT_DIR = "/home/gustavoneves/sources/rboxnet/"
+ROOT_DIR = os.getcwd()
+# ROOT_DIR = "/home/gustavoneves/sources/rboxnet/"
 
 # Trained model directory
 MODEL_DIR = os.path.join(ROOT_DIR, "logs")
 
 # Path to Shapes trained weights
-RBOXNET_MODEL_PATH = os.path.join(
-    ROOT_DIR,
-    "logs/gemini_resnet50_deltas20181126T2216/rboxnet_gemini_0160.h5")
+# RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet50_deltas_last.h5"
+# RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet50_rotdim_last.h5"
+# RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet50_verts_last.h5"
+# RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet101_deltas_last.h5"
+# RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet101_rotdim_last.h5"
+RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet101_verts_last.h5"
+
+RBOXNET_MODEL_PATH = os.path.join(ROOT_DIR, RBOXNET_MODEL_PATH)
 
 # Path to configuration file
-CONFIG_PATH = os.path.join(ROOT_DIR, "cfg/gemini_deltas.json")
+# CONFIG_PATH = os.path.join(ROOT_DIR, "cfg/gemini_deltas.json")
+# CONFIG_PATH = os.path.join(ROOT_DIR, "cfg/gemini_rotdim.json")
+CONFIG_PATH = os.path.join(ROOT_DIR, "cfg/gemini_verts.json")
 
 
-#%% [markdown]
 # ## Create inference configuration.
-#
-#%%
 class InferenceConfig(rboxtrain.TrainingConfig):
   GPU_COUNT = 1
   IMAGES_PER_GPU = 1
   DETECTION_MIN_CONFIDENCE = 0
-  BACKBONE = "resnet50"
+  # BACKBONE = "resnet50"
+  BACKBONE = "resnet101"
 
 
 config = InferenceConfig()
+
+# Filter labels
+FILTER_LABELS = ["ssiv_bahia", "jequitaia", "balsa"]
+# FILTER_LABELS = ["balsa"]
+
+# Dataset shuffle
+SHUFFLE = True
+
+# do not draw rotate bounding-boxes
+DISABLE_ROTATED_BOXES = False
+
+# do not draw rotate boxes
+DISABLE_BOXES = True
+
+# number of classes
+NB_CLASS = 3
+
+# class labels
+labels = ["ssiv_bahia", "jequitaia", "balsa"]
+
+# total images to be process
+MAX_IMAGES = -1
+
+# show detection
+SHOW_DETECTION = False
+
+# enable output
+VERBOSE = True
+
+#%%
+# define functions
+#################################################
+
+
+# extract annotations
+def extract_annotations(annotations_info):
+  annotations = []
+  for ann in annotations_info:
+    annotations.append({
+        "id": ann['id'],
+        "bbox": ann['bbox'],
+        "rbox": ann['segmentation']
+    })
+  return annotations
+
+
+# extract detections
+def extract_detections(class_ids, scores, boxes, rotated_boxes):
+  detections = []
+  for i, cls_id in enumerate(class_ids):
+    detections.append({
+        "id": cls_id,
+        "score": scores[i].tolist(),
+        "bbox": boxes[i].tolist(),
+        "rbox": rotated_boxes[i].tolist()
+    })
+  return detections
+
 
 #%% [markdown]
 # ## Load dataset
@@ -54,14 +121,18 @@ config = InferenceConfig()
 with open(CONFIG_PATH) as f:
   cfg = json.load(f)
   anns_path = os.path.join(ROOT_DIR, cfg['annotations']['test'])
-  dataset = rboxnet.dataset.gemini_dataset(anns_path, shuffle=False)
-  config.regressor = cfg['regressor']
+  dataset = rboxnet.dataset.gemini_dataset(
+      anns_path, shuffle=SHUFFLE, labels=FILTER_LABELS)
+  if not DISABLE_ROTATED_BOXES:
+    config.regressor = cfg['regressor']
+
+if config.regressor:
+  config.NAME = "{0}_{1}_{2}".format(config.NAME, config.BACKBONE,
+                                     config.regressor)
+  print("Configuration Name: ", config.NAME)
 
 print("Images: {0}\nClasses: {1}".format(
     len(dataset.image_ids), dataset.class_names))
-
-image_id = random.choice(dataset.image_ids)
-image = dataset.load_image(image_id)
 
 DEVICE = "/gpu:0"  # /cpu:0 or /gpu:0
 with tf.device(DEVICE):
@@ -71,127 +142,90 @@ with tf.device(DEVICE):
 # Load trained weights
 net.load_weights(RBOXNET_MODEL_PATH, by_name=True)
 
-#%% [markdown]
-# run detector
-molded_images, image_metas, windows = net.mold_inputs([image])
+print("Labels: ", FILTER_LABELS)
+print("Dataset size: ", len(dataset.image_ids))
+print("Total images: ", len(dataset.image_ids[:MAX_IMAGES]))
+print("Start predictions")
 
-rpn_rois, rpn_class, rpn_bbox, rbox_dts = net.keras_model.predict(
-    [molded_images, image_metas], verbose=0)
+all_ious = []
+results = []
 
-print(rbox_dts.shape)
+total_images = len(dataset.image_ids[:MAX_IMAGES])
+count = 0
+for image_id in dataset.image_ids[:MAX_IMAGES]:
+  image = dataset.load_image(image_id)
 
-image_shape = image.shape
+  start_time = time.time()
+  detections = net.detect([image])[0]
+  elapsed_time = time.time() - start_time
+  fps = 1.0 / elapsed_time
 
+  class_ids, scores, boxes, rotated_boxes = \
+      detections['class_ids'], detections['scores'], detections['boxes'], detections['rotated_boxes']
+  class_ids = [dataset.class_info[cls_id]['id'] for cls_id in class_ids]
 
-def unmold_detections(dts, image_shape, window, config):
-  zero_ix = np.where(dts[:, 0] == 0)[0]
-  N = zero_ix[0] if zero_ix.shape[0] > 0 else dts.shape[0]
-  class_ids = dts[:N, 0].astype(np.int32)
-  scores = dts[:N, 1]
-  boxes = dts[:N, 2:6]
+  # flip vertices
+  boxes = vertices_fliplr(boxes)
 
-  # Compute scale and shift to translate coordinates to image domain.
-  h_scale = image_shape[0] / (window[2] - window[0])
-  w_scale = image_shape[1] / (window[3] - window[1])
+  if not rotated_boxes is None:
+    rotated_boxes = vertices_fliplr(rotated_boxes)
+    drawing.draw_rotated_boxes(image, rotated_boxes)
 
-  scale = min(h_scale, w_scale)
-  shift = window[:2]  # y, x
-  scales = np.array([scale, scale, scale, scale])
-  shifts = np.array([shift[0], shift[1], shift[0], shift[1]])
+    image_info = dataset.image_info[image_id]
+    img_path = image_info['path']
 
-  # Filter out detections with zero area. Often only happens in early
-  # stages of training when the network weights are still a bit random.
-  exclude_ix = np.where(
-      (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]) <= 0)[0]
+    # extract detections
+    detections = extract_detections(class_ids, scores, boxes, rotated_boxes)
 
-  # Translate bounding boxes to image domain
-  boxes = np.multiply(boxes - shifts, scales).astype(np.int32)
-  if config.regressor == "deltas":
-    tlines = dts[:N, 6:10]
-    tlines = np.multiply(tlines - shifts, scales).astype(np.int32)
+    # extract annotations
+    annotations = extract_annotations(image_info["annotations"])
 
-  outputs = []
-  if exclude_ix.shape[0] > 0:
-    boxes = np.delete(boxes, exclude_ix, axis=0)
-    class_ids = np.delete(class_ids, exclude_ix, axis=0)
-    scores = np.delete(scores, exclude_ix, axis=0)
+    image_h, image_w, image_d = image.shape
 
-    if config.regressor == "deltas":
-      tlines = np.delete(tlines, exclude_ix, axis=0)
+    result = {
+        'image_info': {
+            "filepath": img_path,
+            'width': image_w,
+            'height': image_h,
+            'depth': image_d
+        },
+        'elapsed_time': elapsed_time,
+        'annotations': annotations,
+        'detections': detections
+    }
 
-  outputs = [class_ids, scores, boxes]
+    results += [result]
 
-  if config.regressor == "deltas":
-    outputs += [tlines]
+    ious = calc_ious(annotations, detections, (image_h, image_w), NB_CLASS)
+    all_ious += ious
 
-  return outputs
+  count += 1
 
+  if VERBOSE:
+    print("Prediction {0}/{1}:".format(count, total_images))
+    print("FPS: {0:0.4f}".format(fps))
+    for iou in ious:
+      print("IoU: {0:0.4f}".format(iou))
 
-def tlines_to_rboxes(tlines, boxes):
-  y1 = tlines[:, 0]
-  x1 = tlines[:, 1]
-  y2 = tlines[:, 2]
-  x2 = tlines[:, 3]
-  y3 = boxes[:, 2] - (y1 - boxes[:, 0])
-  x3 = boxes[:, 3] - (x1 - boxes[:, 1])
-  y4 = boxes[:, 0] + (boxes[:, 2] - y2)
-  x4 = boxes[:, 1] + (boxes[:, 3] - x2)
-  return np.stack([y1, x1, y2, x2, y3, x3, y4, x4], axis=1)
+  # show detections
+  if SHOW_DETECTION:
+    drawing.draw_boxes(
+        image, boxes, class_ids, scores, labels, only_label=DISABLE_BOXES)
+    if not rotated_boxes is None:
+      drawing.draw_rotated_boxes(image, rotated_boxes)
 
+    for ann in annotations:
+      drawing.draw_rotated_boxes(image, [ann['rbox']], colors=(0, 0, 255))
 
-#%%
-# show detection results
-tlines = None
-rboxes = None
-if config.regressor == "deltas":
-  class_ids, scores, boxes, tlines = unmold_detections(
-      rbox_dts[0], image.shape, windows[0], config)
-  rboxes = tlines_to_rboxes(tlines, boxes)
-else:
-  class_ids, scores, boxes = unmold_detections(rbox_dts[0], image.shape,
-                                               windows[0], config)
+    # save detection results
+    cv2.imshow("image", image)
+    if cv2.waitKey(15) & 0xFF == ord('q'):
+      break
 
-color = "red"
-style = "solid"
-alpha = 1
+if len(results) > 0:
+  result_filepath = "{}{:%Y%m%dT%H%M}.json".format(config.NAME.lower(),
+                                                   datetime.datetime.now())
+  print("Result saved in: {0}".format(result_filepath))
+  json.dump(results, open(result_filepath, 'w'))
 
-fig, ax1 = plt.subplots(1, figsize=(12, 12))
-ax1.imshow(image.astype(np.uint8))
-
-for i, cls_id in enumerate(class_ids):
-  print("{0}: {1}".format(dataset.class_info[cls_id]['name'], scores[i]))
-  y1, x1, y2, x2 = boxes[i]
-  p = patches.Rectangle((x1, y1),
-                        x2 - x1,
-                        y2 - y1,
-                        linewidth=2,
-                        alpha=alpha,
-                        linestyle=style,
-                        edgecolor=color,
-                        facecolor='none')
-  ax1.add_patch(p)
-
-
-# if rboxes:
-#   fig, ax2 = plt.subplots(1, figsize=(12, 12))
-
-#   for i, cls_id in enumerate(class_ids):
-#     print("{0}: {1}".format(dataset.class_info[cls_id]['name'], scores[i]))
-#     y1, x1, y2, x2 = boxes[i]
-#     p = patches.Rectangle((x1, y1),
-#                           x2 - x1,
-#                           y2 - y1,
-#                           linewidth=2,
-#                           alpha=alpha,
-#                           linestyle=style,
-#                           edgecolor=color,
-#                           facecolor='none')
-#     ax1.add_patch(p)
-
-#     verts = np.reshape(rboxes[i], (-1, 2))
-#     verts = np.fliplr(verts)
-#     p = Polygon(verts, facecolor="none", linewidth=2, edgecolor=color)
-#     ax2.add_patch(p)
-
-#   ax2.imshow(image.astype(np.uint8))
-#   plt.show()
+plot_average_recall(all_ious)

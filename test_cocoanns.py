@@ -8,7 +8,7 @@ import numpy as np
 import skimage.io as io
 from pycocotools.coco import COCO
 
-COCO_ANNS_PATH = "assets/annotations/coco_annotations_test.json"
+COCO_ANNS_PATH = "/home/gustavoneves/data/gemini/annotations"
 BASE_FOLDER = "/home/gustavoneves/data/gemini/dataset/test"
 
 coco=COCO(COCO_ANNS_PATH)

@@ -134,13 +134,24 @@ class CocoDataset(utils.Dataset):
 
 class GeminiDataset(utils.Dataset):
     LABELS = ["ssiv_bahia", "jequitaia", "balsa"]
-    def load_gemini(self, dataset, base_folder):
+    def load_gemini(self, dataset, base_folder, labels=None):
         for i in range(len(GeminiDataset.LABELS)):
             self.add_class('gemini', i, GeminiDataset.LABELS[i])
 
         labels_count = np.zeros(len(self.LABELS), dtype=np.int32)
 
         for item in dataset:
+            if labels:
+              seen = False
+              for a in item['annotations']:
+                label_id = a["id"]
+                if self.LABELS[label_id] in labels:
+                  seen = True
+                  break
+
+              if not seen:
+                continue
+
             if not base_folder:
               image_path = os.path.join(item['basefolder'], item['filepath'])
             else:
@@ -221,9 +232,9 @@ def load_json(filepath, shuffle=False):
       random.shuffle(annotations)
     return annotations
 
-def gemini_dataset(anns, shuffle=True, base_folder=None):
+def gemini_dataset(anns, shuffle=True, base_folder=None, labels=None):
   dataset = GeminiDataset()
-  dataset.load_gemini(load_json(anns, shuffle=shuffle), base_folder=base_folder)
+  dataset.load_gemini(load_json(anns, shuffle=shuffle), base_folder=base_folder, labels=labels)
   dataset.prepare()
   return dataset
 

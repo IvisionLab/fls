@@ -3,6 +3,7 @@ import sys
 import json
 import datetime
 import re
+import math
 import numpy as np
 import tensorflow as tf
 import keras
@@ -14,6 +15,111 @@ import rboxnet
 from rboxnet import model, utils
 from rboxnet.model import rpn_class_loss_graph, rpn_bbox_loss_graph
 from rboxnet.model import log, fullmatch
+
+
+def unmold_detections(dts, image_shape, window, config):
+  zero_ix = np.where(dts[:, 0] == 0)[0]
+  N = zero_ix[0] if zero_ix.shape[0] > 0 else dts.shape[0]
+  class_ids = dts[:N, 0].astype(np.int32)
+  scores = dts[:N, 1]
+  boxes = dts[:N, 2:6]
+
+  # Compute scale and shift to translate coordinates to image domain.
+  h_scale = image_shape[0] / (window[2] - window[0])
+  w_scale = image_shape[1] / (window[3] - window[1])
+
+  scale = min(h_scale, w_scale)
+  shift = window[:2]  # y, x
+  scales = np.array([scale, scale, scale, scale])
+  shifts = np.array([shift[0], shift[1], shift[0], shift[1]])
+
+  # Filter out detections with zero area. Often only happens in early
+  # stages of training when the network weights are still a bit random.
+  exclude_ix = np.where(
+      (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]) <= 0)[0]
+
+  # Translate bounding boxes to image domain
+  boxes = np.multiply(boxes - shifts, scales).astype(np.int32)
+  if config.regressor == "deltas":
+    tlines = dts[:N, 6:10]
+    tlines = np.multiply(tlines - shifts, scales).astype(np.int32)
+    rboxes_verts = top_line_to_vertices(tlines, boxes)
+  elif config.regressor == "rotdim":
+    angles = dts[:N, 6]
+    dimensions = dts[:N, 7:9]
+    dimensions = np.multiply(dimensions, [scale, scale]).astype(np.int32)
+    angles *= 180
+    angles -= 90
+    rboxes_verts = rotated_box_to_vertices(angles, dimensions, boxes)
+  elif config.regressor == "verts":
+    verts = dts[:N,6:14]
+    scales = np.repeat(scales, 2)
+    shifts = np.hstack((shifts, shifts))
+    verts = np.multiply(verts-shifts, scales).astype(np.int32)
+    rboxes_verts = refine_vertices(verts, boxes)
+
+  outputs = []
+  if exclude_ix.shape[0] > 0:
+    boxes = np.delete(boxes, exclude_ix, axis=0)
+    class_ids = np.delete(class_ids, exclude_ix, axis=0)
+    scores = np.delete(scores, exclude_ix, axis=0)
+
+    if config.regressor == "deltas" or \
+        config.regressor == "rotdim" or \
+        config.regressor == "verts":
+      rboxes_verts = np.delete(rboxes_verts, exclude_ix, axis=0)
+
+  outputs = [class_ids, scores, boxes]
+
+  if config.regressor == "deltas" or \
+      config.regressor == "rotdim" or \
+      config.regressor == "verts":
+    outputs += [rboxes_verts]
+
+  return outputs
+
+def refine_vertices(verts, boxes):
+  cy = boxes[:, 0] + (boxes[:, 2] - boxes[:, 0]) * 0.5
+  cx = boxes[:, 1] + (boxes[:, 3] - boxes[:, 1]) * 0.5
+  w = np.array([np.linalg.norm(verts[i,0:2]-verts[i,2:4]) for i in range(verts.shape[0])])
+  h = np.array([np.linalg.norm(verts[i,2:4]-verts[i,4:6]) for i in range(verts.shape[0])])
+  angles = np.zeros(verts.shape[0])
+  for i in range(verts.shape[0]):
+      dy = verts[i,2]-verts[i,0]
+      dx = verts[i,3]-verts[i,1]
+      rad = math.atan2(dy, dx)
+      angles[i] = math.degrees(rad)
+  return utils.rboxes2points(cy, cx, h, w, angles)
+
+
+def rotated_box_to_vertices(angles, dimensions, boxes):
+  h = dimensions[:, 0]
+  w = dimensions[:, 1]
+  cy = boxes[:, 0] + (boxes[:, 2] - boxes[:, 0]) * 0.5
+  cx = boxes[:, 1] + (boxes[:, 3] - boxes[:, 1]) * 0.5
+  rboxes_verts = utils.rboxes2points(cy, cx, h, w, angles)
+  return rboxes_verts
+
+
+def top_line_to_vertices(tlines, boxes):
+  y1 = tlines[:, 0]
+  x1 = tlines[:, 1]
+  y2 = tlines[:, 2]
+  x2 = tlines[:, 3]
+  y3 = boxes[:, 2] - (y1 - boxes[:, 0])
+  x3 = boxes[:, 3] - (x1 - boxes[:, 1])
+  y4 = boxes[:, 0] + (boxes[:, 2] - y2)
+  x4 = boxes[:, 1] + (boxes[:, 3] - x2)
+  return np.stack([y1, x1, y2, x2, y3, x3, y4, x4], axis=1)
+
+
+def vertices_fliplr(verts):
+  flipped = []
+  for v in verts:
+    v = v.reshape(-1, 2)
+    v = np.fliplr(v)
+    flipped += [v.reshape(-1)]
+  return flipped
 
 
 def line_to_deltas(box, rbox):
@@ -175,6 +281,7 @@ def rbox_bbox_loss_graph(target_bbox, target_class_ids, pred_bbox):
       tf.constant(0.0))
   loss = K.mean(loss)
   loss = K.reshape(loss, [1, 1])
+  loss = tf.Print(loss, [loss], message='Loss \t', summarize=1000)
   return loss
 
 
@@ -219,6 +326,7 @@ def rbox_dim_loss_layer(target_rbox_dim, target_class_ids, rbox_dim):
   return KL.Lambda(
       lambda x: model.custom_loss_graph(*x),
       name="rbox_dim_loss")([target_rbox_dim, target_class_ids, rbox_dim])
+
 
 def rbox_verts_loss_layer(target_rbox_verts, target_class_ids, rbox_verts):
   return KL.Lambda(
@@ -300,6 +408,7 @@ def rbox_rotdim_regressor_layers(shared, num_classes):
 
   return rbox_angles, rbox_dim
 
+
 def rbox_verts_regressor_layers(shared, num_classes):
   # rotated bounding vertices
   x = KL.TimeDistributed(
@@ -309,6 +418,7 @@ def rbox_verts_regressor_layers(shared, num_classes):
   s = K.int_shape(x)
   rbox_verts = KL.Reshape((s[1], num_classes, 8), name="rbox_verts")(x)
   return rbox_verts
+
 
 def detection_target_layer(config, inputs):
   return DetectionTargetLayer(config, name="proposal_targets")(inputs)
@@ -437,7 +547,6 @@ def detection_targets_graph(config, proposals, gt_class_ids, gt_boxes,
       roi_gt_rboxes = tf.pad(roi_gt_rboxes, [(0, N + P), (0, 0)])
       return rois, roi_gt_class_ids, deltas, roi_gt_rboxes
 
-
   return rois, roi_gt_class_ids, deltas
 
 
@@ -469,6 +578,25 @@ def refine_detections_graph(rois, probs, deltas, window, config, **kwargs):
     rbox_line *= tf.constant([height, width, height, width], dtype=tf.float32)
     rbox_line = clip_line_graph(rbox_line, clipped_rois)
     rbox_line = tf.to_int32(tf.rint(rbox_line))
+  elif config.regressor == "rotdim" and not kwargs.get('rbox_angles') == None and \
+       not kwargs.get('rbox_dim') == None:
+    rbox_angles = kwargs.get('rbox_angles')
+    rbox_angles = tf.gather_nd(rbox_angles, indices)
+    rbox_angles *= 0.2
+
+    rbox_dim = kwargs.get('rbox_dim')
+    rbox_dim = tf.gather_nd(rbox_dim, indices)
+    rbox_dim *= 0.1
+    rbox_dim *= tf.constant([height, width], dtype=tf.float32)
+    rbox_dim = tf.to_int32(tf.rint(rbox_dim))
+  elif config.regressor == "verts" and not kwargs.get('rbox_verts') == None:
+    rbox_verts = kwargs.get('rbox_verts')
+    rbox_verts = tf.gather_nd(rbox_verts, indices)
+    rbox_verts *= tf.constant(
+        [height, width, height, width, height, width, height, width],
+        dtype=tf.float32)
+    rbox_verts = model.clip_rotated_boxes_graph(rbox_verts, clipped_rois)
+    rbox_verts = tf.to_int32(tf.rint(rbox_verts))
 
   # Filter out background boxes
   keep = tf.where(class_ids > 0)[:, 0]
@@ -533,6 +661,13 @@ def refine_detections_graph(rois, probs, deltas, window, config, **kwargs):
 
   if config.regressor == "deltas" and not rbox_line == None:
     outputs += [tf.to_float(tf.gather(rbox_line, keep))]
+  elif config.regressor == "rotdim" and not rbox_angles == None and not rbox_dim == None:
+    outputs += [
+        tf.to_float(tf.gather(rbox_angles, keep)),
+        tf.to_float(tf.gather(rbox_dim, keep))
+    ]
+  elif config.regressor == "verts" and not rbox_verts == None:
+    outputs += [tf.to_float(tf.gather(rbox_verts, keep))]
 
   detections = tf.concat(outputs, axis=1)
 
@@ -637,6 +772,21 @@ class DetectionLayer(KE.Layer):
           lambda a, b, c, d, e: refine_detections_graph(a, b, c, d, self.config, rbox_deltas=e),
           self.config.IMAGES_PER_GPU)
       output_size = 10
+    elif self.config.regressor == "rotdim":
+      rbox_angles = inputs[4]
+      rbox_dim = inputs[5]
+      detections_batch = utils.batch_slice(
+          [rois, rbox_class, rbox_bbox, window, rbox_angles, rbox_dim],
+          lambda a, b, c, d, e, f: refine_detections_graph(a, b, c, d, self.config, rbox_angles=e, rbox_dim=f),
+          self.config.IMAGES_PER_GPU)
+      output_size = 9
+    elif self.config.regressor == "verts":
+      rbox_verts = inputs[4]
+      detections_batch = utils.batch_slice(
+          [rois, rbox_class, rbox_bbox, window, rbox_verts],
+          lambda a, b, c, d, e: refine_detections_graph(a, b, c, d, self.config, rbox_verts=e),
+          self.config.IMAGES_PER_GPU)
+      output_size = 14
     else:
       detections_batch = utils.batch_slice(
           [rois, rbox_class, rbox_bbox, window],
@@ -650,8 +800,13 @@ class DetectionLayer(KE.Layer):
     ])
 
   def compute_output_shape(self, input_shape):
+
     if self.config.regressor == "deltas":
       return (None, self.config.DETECTION_MAX_INSTANCES, 10)
+    elif self.config.regressor == "rotdim":
+      return (None, self.config.DETECTION_MAX_INSTANCES, 9)
+    elif self.config.regressor == "verts":
+      return (None, self.config.DETECTION_MAX_INSTANCES, 14)
 
     return (None, self.config.DETECTION_MAX_INSTANCES, 6)
 
