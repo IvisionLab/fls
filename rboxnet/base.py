@@ -81,8 +81,8 @@ def unmold_detections(dts, image_shape, window, config):
 def refine_vertices(verts, boxes):
   cy = boxes[:, 0] + (boxes[:, 2] - boxes[:, 0]) * 0.5
   cx = boxes[:, 1] + (boxes[:, 3] - boxes[:, 1]) * 0.5
-  w = np.array([np.linalg.norm(verts[i,0:2]-verts[i,2:4]) for i in range(verts.shape[0])])
-  h = np.array([np.linalg.norm(verts[i,2:4]-verts[i,4:6]) for i in range(verts.shape[0])])
+  h = np.array([np.linalg.norm(verts[i,0:2]-verts[i,2:4]) for i in range(verts.shape[0])])
+  w = np.array([np.linalg.norm(verts[i,2:4]-verts[i,4:6]) for i in range(verts.shape[0])])
   angles = np.zeros(verts.shape[0])
   for i in range(verts.shape[0]):
       dy = verts[i,2]-verts[i,0]

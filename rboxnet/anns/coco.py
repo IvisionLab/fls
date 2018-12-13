@@ -4,6 +4,7 @@ import json
 import numpy as np
 from sklearn.utils import shuffle
 from rboxnet.anns import common
+from rboxnet.anns.rbox import load_rbbox, load_bbox, load_rbox_mask
 
 
 ################################
@@ -128,11 +129,12 @@ def build_coco_annotations(base_folder, all_anns, labels, use_rbbox):
     else:
       raise Exception('duplicated image: {}'.format(file_name))
 
-    bbox = unpack_bbox(gt.astype(np.int32))
-
     if use_rbbox:
-      polygon = unpack_rbbox(gt, bbox)
+      gt_rbbox = load_rbbox(gt)
+      polygon, bbox = load_rbox_mask(gt_rbbox)
+      bbox = list(bbox)
     else:
+      bbox = unpack_bbox(gt.astype(np.int32))
       polygon = find_mask_polygon(get_mask_filepath(img_file_path))
 
     print('add annotation with {},{},{},{}'.format(

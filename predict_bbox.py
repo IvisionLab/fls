@@ -30,19 +30,19 @@ ROOT_DIR = os.getcwd()
 MODEL_DIR = os.path.join(ROOT_DIR, "logs")
 
 # Path to Shapes trained weights
-# RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet50_deltas_last.h5"
+RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet50_deltas_last.h5"
 # RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet50_rotdim_last.h5"
 # RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet50_verts_last.h5"
 # RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet101_deltas_last.h5"
 # RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet101_rotdim_last.h5"
-RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet101_verts_last.h5"
+# RBOXNET_MODEL_PATH = "assets/weights/rboxnet_gemini_resnet101_verts_last.h5"
 
 RBOXNET_MODEL_PATH = os.path.join(ROOT_DIR, RBOXNET_MODEL_PATH)
 
 # Path to configuration file
-# CONFIG_PATH = os.path.join(ROOT_DIR, "cfg/gemini_deltas.json")
+CONFIG_PATH = os.path.join(ROOT_DIR, "cfg/gemini_deltas.json")
 # CONFIG_PATH = os.path.join(ROOT_DIR, "cfg/gemini_rotdim.json")
-CONFIG_PATH = os.path.join(ROOT_DIR, "cfg/gemini_verts.json")
+# CONFIG_PATH = os.path.join(ROOT_DIR, "cfg/gemini_verts.json")
 
 
 # ## Create inference configuration.
@@ -50,8 +50,8 @@ class InferenceConfig(rboxtrain.TrainingConfig):
   GPU_COUNT = 1
   IMAGES_PER_GPU = 1
   DETECTION_MIN_CONFIDENCE = 0
-  # BACKBONE = "resnet50"
-  BACKBONE = "resnet101"
+  BACKBONE = "resnet50"
+  # BACKBONE = "resnet101"
 
 
 config = InferenceConfig()
@@ -59,15 +59,18 @@ config = InferenceConfig()
 # Filter labels
 FILTER_LABELS = ["ssiv_bahia", "jequitaia", "balsa"]
 # FILTER_LABELS = ["balsa"]
+# FILTER_LABELS = ["jequitaia"]
+# FILTER_LABELS = ["balsa"]
 
 # Dataset shuffle
+# SHUFFLE = False
 SHUFFLE = True
 
 # do not draw rotate bounding-boxes
-DISABLE_ROTATED_BOXES = False
+DISABLE_ROTATED_BOXES = True
 
 # do not draw rotate boxes
-DISABLE_BOXES = True
+DISABLE_BOXES = False
 
 # number of classes
 NB_CLASS = 3
@@ -79,7 +82,7 @@ labels = ["ssiv_bahia", "jequitaia", "balsa"]
 MAX_IMAGES = -1
 
 # show detection
-SHOW_DETECTION = False
+SHOW_DETECTION = True
 
 # enable output
 VERBOSE = True
@@ -160,13 +163,17 @@ for image_id in dataset.image_ids[:MAX_IMAGES]:
   elapsed_time = time.time() - start_time
   fps = 1.0 / elapsed_time
 
+  print(detections['rotated_boxes'])
+
   class_ids, scores, boxes, rotated_boxes = \
       detections['class_ids'], detections['scores'], detections['boxes'], detections['rotated_boxes']
   class_ids = [dataset.class_info[cls_id]['id'] for cls_id in class_ids]
+  print(rotated_boxes)
 
   # flip vertices
   boxes = vertices_fliplr(boxes)
 
+  ious = None
   if not rotated_boxes is None:
     rotated_boxes = vertices_fliplr(rotated_boxes)
     drawing.draw_rotated_boxes(image, rotated_boxes)
@@ -196,16 +203,18 @@ for image_id in dataset.image_ids[:MAX_IMAGES]:
 
     results += [result]
 
-    ious = calc_ious(annotations, detections, (image_h, image_w), NB_CLASS)
-    all_ious += ious
+    if not DISABLE_ROTATED_BOXES:
+      ious = calc_ious(annotations, detections, (image_h, image_w), NB_CLASS)
+      all_ious += ious
 
   count += 1
 
   if VERBOSE:
     print("Prediction {0}/{1}:".format(count, total_images))
     print("FPS: {0:0.4f}".format(fps))
-    for iou in ious:
-      print("IoU: {0:0.4f}".format(iou))
+    if not DISABLE_ROTATED_BOXES:
+      for iou in ious:
+        print("IoU: {0:0.4f}".format(iou))
 
   # show detections
   if SHOW_DETECTION:
@@ -213,9 +222,8 @@ for image_id in dataset.image_ids[:MAX_IMAGES]:
         image, boxes, class_ids, scores, labels, only_label=DISABLE_BOXES)
     if not rotated_boxes is None:
       drawing.draw_rotated_boxes(image, rotated_boxes)
-
-    for ann in annotations:
-      drawing.draw_rotated_boxes(image, [ann['rbox']], colors=(0, 0, 255))
+      for ann in annotations:
+        drawing.draw_rotated_boxes(image, [ann['rbox']], colors=(0, 0, 255))
 
     # save detection results
     cv2.imshow("image", image)
@@ -228,4 +236,4 @@ if len(results) > 0:
   print("Result saved in: {0}".format(result_filepath))
   json.dump(results, open(result_filepath, 'w'))
 
-plot_average_recall(all_ious)
+# plot_average_recall(all_ious)

@@ -8,7 +8,7 @@ import numpy as np
 import skimage.io as io
 from pycocotools.coco import COCO
 
-COCO_ANNS_PATH = "/home/gustavoneves/data/gemini/annotations"
+COCO_ANNS_PATH = "assets/annotations/coco_annotations_test.json"
 BASE_FOLDER = "/home/gustavoneves/data/gemini/dataset/test"
 
 coco=COCO(COCO_ANNS_PATH)
@@ -32,12 +32,12 @@ img_file_path = os.path.join(BASE_FOLDER, img['file_name'])
 I = io.imread(img_file_path)
 plt.axis('off')
 plt.imshow(I)
-plt.show()
-
 #%%
 # load and display instance annotations
 plt.imshow(I); plt.axis('off')
 annIds = coco.getAnnIds(imgIds=img['id'], catIds=catIds, iscrowd=None)
 anns = coco.loadAnns(annIds)
+print(anns)
 coco.showAnns(anns)
 
+plt.show()
