@@ -8,6 +8,7 @@ import skimage.io
 import matplotlib.pyplot as plt
 from rboxnet.eval import rotated_box_mask
 from rboxnet.drawing import draw_verts
+from rboxnet.anns.common import adjust_rotated_boxes
 from pycocotools.coco import COCO
 from pycocotools.mask import encode
 from pycocotools.cocoeval import COCOeval
@@ -71,9 +72,11 @@ from pycocotools.cocoeval import COCOeval
 
 # image base folder
 BASE_FOLDER = "/home/gustavoneves/data/gemini/dataset/test/"
+BASE_FOLDER_WORSPACE = "/workspace/data/gemini/dataset/test/"
 
 # coco annotation path
 COCO_ANNS_PATH = "assets/annotations/coco_annotations_test.json"
+MASK_RCNN_COCO_ANNS_PATH = "assets/annotations/mask_rcnn_coco_annotations_test.json"
 
 # source labels
 LABELS = ["ssiv_bahia", "jequitaia", "balsa"]
@@ -90,20 +93,23 @@ SHOW_ANNOTATIONS = False
 # plot coco annotations
 COCO_PLOT_ANNOTATIONS = False
 
-
 # get coco id from source class id
 def coco_catId(idx):
   source_ids = {0: 1, 1: 3, 2: 2}
   return source_ids[idx]
 
-def evalcoco(results_filepath, class_id=-1):
+def evalcoco(results_filepath, evaltype="segm", class_id=-1, enable_adjustment=False):
   # load results file
   with open(results_filepath) as jsonfile:
     results = json.load(jsonfile)
 
-  #%%
+  is_mask_rcnn = True if not results_filepath.find("mask_rcnn") == -1 else False
+
   # load images from coco annotations
-  coco = COCO(COCO_ANNS_PATH)
+  if is_mask_rcnn and evaltype=="bbox":
+    coco = COCO(MASK_RCNN_COCO_ANNS_PATH)
+  else:
+    coco = COCO(COCO_ANNS_PATH)
 
   if class_id > -1:
     catId = coco_catId(class_id)
@@ -113,7 +119,6 @@ def evalcoco(results_filepath, class_id=-1):
     imgIds = coco.getImgIds(coco.getImgIds())
   imgs = coco.loadImgs(imgIds)
 
-  #%%
   # build coco results
   coco_results = []
   coco_image_ids = []
@@ -126,13 +131,20 @@ def evalcoco(results_filepath, class_id=-1):
     image_ids = [img['id'] for img in imgs if img["file_name"] == file_name]
 
     if not image_ids:
-      continue
+      file_name = image_info['filepath'].replace(BASE_FOLDER_WORSPACE, '')
+      image_ids = [img['id'] for img in imgs if img["file_name"] == file_name]
+      if not image_ids:
+        continue
 
     image_id = image_ids[0]
     coco_image_ids += [image_id]
 
     # detections results
     detections = r['detections']
+    if not detections == [] and enable_adjustment == True:
+      for dt in detections:
+        dt["rbox"] = adjust_rotated_boxes(dt["rbox"], dt["bbox"])
+
 
     # annotations
     annotations = r['annotations']
@@ -154,7 +166,7 @@ def evalcoco(results_filepath, class_id=-1):
       coco_results.append({
             "image_id": image_id,
             "category_id": None,
-            "bbox": [],
+            "bbox": [-1, -1, -1, -1],
             "score": None,
             "segmentation": []
         })
@@ -190,10 +202,10 @@ def evalcoco(results_filepath, class_id=-1):
         cv2.imshow("results", image)
         if cv2.waitKey() & 0xFF == ord('q'):
           break
-  # %%
+
   # coco evaluation
-  print(coco_results)
-  cocoEval = COCOeval(coco, coco.loadRes(coco_results), "segm")
+  print("Total coco results: ", len((coco_results)))
+  cocoEval = COCOeval(coco, coco.loadRes(coco_results), iouType=evaltype)
   cocoEval.params.imgIds = coco_image_ids
   cocoEval.evaluate()
   cocoEval.accumulate()

@@ -152,3 +152,38 @@ def list_files(base_folder, limit_per_cls):
       all_anns.append({'file_name': file_name, 'clsid': clsid, 'gt': gt})
 
   return all_anns
+
+def refine_rbox(rbox, bbox):
+  x1, y1, x2, y2, x3, y3 = rbox[:6]
+  cx = bbox[0] + (bbox[2] - bbox[0]) * 0.5
+  cy = bbox[1] + (bbox[3] - bbox[1]) * 0.5
+  rw = math.sqrt(math.pow(x2 - x1, 2) + math.pow(y2 - y1, 2))
+  rh = math.sqrt(math.pow(x3 - x2, 2) + math.pow(y3 - y2, 2))
+  dx = x2-x1
+  dy = y2-y1
+  rad = math.atan2(dy, dx)
+  t = math.degrees(rad)
+  rbox = rbox2vert([cx, cy, rw, rh, t])
+  return rbox.tolist()
+
+def adjust_rotated_boxes(rbox, bbox):
+  rbox = np.array(rbox)
+  bbox = np.array(bbox)
+
+  tolerance = 5
+  dy = rbox[1]-rbox[3]
+  if abs(dy) > tolerance:
+    if dy < 0:
+      dy1 = abs(bbox[1]-rbox[1])
+      if (dy1 > tolerance):
+        rbox[1]=bbox[1]
+        rbox[5]=bbox[3]-(rbox[1]-bbox[1])
+        rbox = refine_rbox(rbox, bbox)
+    else:
+      dy2 = abs(rbox[3]-bbox[3])
+      if (dy2 > tolerance):
+        rbox[3]=bbox[1]
+        rbox[7]=bbox[1]+(bbox[3]-rbox[3])
+        rbox = refine_rbox(rbox, bbox)
+
+  return rbox

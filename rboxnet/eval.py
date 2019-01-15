@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 from rboxnet.utils import compute_overlaps_masks
 
 
+
+
 # create mask from rodated bounding-box
 def rotated_box_mask(shape, rotated_boxes):
   mask = np.zeros(shape, dtype=np.uint8)
@@ -92,12 +94,45 @@ def masks_from_rotated_boxes(rboxes, image_shape):
   masks = np.stack(masks, axis=2)
   return masks
 
+def bbox_iou(boxA, boxB):
+	# determine the (x, y)-coordinates of the intersection rectangle
+	xA = max(boxA[0], boxB[0])
+	yA = max(boxA[1], boxB[1])
+	xB = min(boxA[2], boxB[2])
+	yB = min(boxA[3], boxB[3])
 
-def compute_match(annotations, detections, image_shape, iou_threshold=0.5):
+	# compute the area of intersection rectangle
+	interArea = max(0, xB - xA + 1) * max(0, yB - yA + 1)
+
+	# compute the area of both the prediction and ground-truth
+	# rectangles
+	boxAArea = (boxA[2] - boxA[0] + 1) * (boxA[3] - boxA[1] + 1)
+	boxBArea = (boxB[2] - boxB[0] + 1) * (boxB[3] - boxB[1] + 1)
+
+	# compute the intersection over union by taking the intersection
+	# area and dividing it by the sum of prediction + ground-truth
+	# areas - the interesection area
+	iou = interArea / float(boxAArea + boxBArea - interArea)
+
+	# return the intersection over union value
+	return iou
+
+def compute_overlaps_bboxes(gt_boxes, pred_boxes):
+  overlaps = np.zeros((pred_boxes.shape[0], gt_boxes.shape[0]))
+  for i in range(pred_boxes.shape[0]):
+    for j in range(gt_boxes.shape[0]):
+      overlaps[i, j] = bbox_iou(pred_boxes[i], gt_boxes[j])
+
+  return overlaps
+
+
+def compute_match(annotations, detections, image_shape, evaltype="segm", iou_threshold=0.5):
   gt_class_ids = np.array([gt['id'] for gt in annotations])
+  gt_bboxes = np.array([gt['bbox'] for gt in annotations])
   gt_rboxes = np.array([gt['rbox'] for gt in annotations])
   pred_class_ids = np.array([dt['id'] for dt in detections])
   pred_scores = np.array([dt['score'] for dt in detections])
+  pred_bboxes = np.array([dt['bbox'] for dt in detections])
   pred_rboxes = np.array([dt['rbox'] for dt in detections])
 
   indices = np.argsort(pred_scores)[::-1]
@@ -105,11 +140,13 @@ def compute_match(annotations, detections, image_shape, iou_threshold=0.5):
   pred_scores = pred_scores[indices]
   pred_rboxes = pred_rboxes[indices]
 
-  gt_masks = masks_from_rotated_boxes(gt_rboxes, image_shape)
-  pred_masks = masks_from_rotated_boxes(pred_rboxes, image_shape)
-
-  # Compute IoU overlaps [pred_masks, gt_masks]
-  overlaps = compute_overlaps_masks(pred_masks, gt_masks)
+  if evaltype == "segm":
+    gt_masks = masks_from_rotated_boxes(gt_rboxes, image_shape)
+    pred_masks = masks_from_rotated_boxes(pred_rboxes, image_shape)
+    # Compute IoU overlaps [pred_masks, gt_masks]
+    overlaps = compute_overlaps_masks(pred_masks, gt_masks)
+  elif evaltype == "bbox":
+    overlaps = compute_overlaps_bboxes(gt_bboxes, pred_bboxes)
 
   # Loop through ground truth boxes and find matching predictions
   pred_match = np.zeros([pred_rboxes.shape[0]])

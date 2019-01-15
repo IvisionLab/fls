@@ -86,10 +86,8 @@ class Training(base.Base):
 
     # ROI Align layer
     roi_align = base.roi_align_layers(rois, rbox_feature_maps, config)
-    print("roi_align: ", roi_align.shape)
     # Two 1024 FC layers
     fc_layers = base.full_connected_layers(roi_align, config)
-    print("fc_layers: ", fc_layers.shape)
 
     # Bounding box classifier layers
     rbox_class_logits, rbox_class, rbox_bbox = \
@@ -196,7 +194,7 @@ class Training(base.Base):
             write_graph=True,
             write_images=False),
         keras.callbacks.ModelCheckpoint(
-            self.checkpoint_path, verbose=0, save_weights_only=True),
+            self.checkpoint_path, verbose=1, save_weights_only=True),
     ]
 
     # Train
@@ -208,7 +206,7 @@ class Training(base.Base):
     workers = max(self.config.BATCH_SIZE // 2, 2)
     self.keras_model.fit_generator(
         train_generator,
-        verbose=2,
+        verbose=1,
         initial_epoch=self.epoch,
         epochs=epochs,
         steps_per_epoch=self.config.STEPS_PER_EPOCH,

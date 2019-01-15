@@ -58,6 +58,7 @@ def unmold_detections(dts, image_shape, window, config):
     verts = np.multiply(verts-shifts, scales).astype(np.int32)
     rboxes_verts = refine_vertices(verts, boxes)
 
+
   outputs = []
   if exclude_ix.shape[0] > 0:
     boxes = np.delete(boxes, exclude_ix, axis=0)
@@ -81,14 +82,20 @@ def unmold_detections(dts, image_shape, window, config):
 def refine_vertices(verts, boxes):
   cy = boxes[:, 0] + (boxes[:, 2] - boxes[:, 0]) * 0.5
   cx = boxes[:, 1] + (boxes[:, 3] - boxes[:, 1]) * 0.5
-  h = np.array([np.linalg.norm(verts[i,0:2]-verts[i,2:4]) for i in range(verts.shape[0])])
-  w = np.array([np.linalg.norm(verts[i,2:4]-verts[i,4:6]) for i in range(verts.shape[0])])
-  angles = np.zeros(verts.shape[0])
+
+  w = np.zeros([verts.shape[0]])
+  h = np.zeros([verts.shape[0]])
+  angles = np.zeros([verts.shape[0]])
+
   for i in range(verts.shape[0]):
-      dy = verts[i,2]-verts[i,0]
-      dx = verts[i,3]-verts[i,1]
-      rad = math.atan2(dy, dx)
-      angles[i] = math.degrees(rad)
+    y1, x1, y2, x2, y3, x3 = verts[i,0:6]
+    h[i] = math.sqrt(math.pow(x3 - x2, 2) + math.pow(y3 - y2, 2))
+    w[i] = math.sqrt(math.pow(x2 - x1, 2) + math.pow(y2 - y1, 2))
+    dx = x2-x1
+    dy = y2-y1
+    rad = math.atan2(dy, dx)
+    angles[i] = math.degrees(rad)
+
   return utils.rboxes2points(cy, cx, h, w, angles)
 
 
@@ -281,7 +288,6 @@ def rbox_bbox_loss_graph(target_bbox, target_class_ids, pred_bbox):
       tf.constant(0.0))
   loss = K.mean(loss)
   loss = K.reshape(loss, [1, 1])
-  loss = tf.Print(loss, [loss], message='Loss \t', summarize=1000)
   return loss
 
 
